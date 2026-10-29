@@ -243,6 +243,17 @@ def run_dml_in_sandbox(query_text: str, check_table: str) -> pd.DataFrame:
         cursor.close()
 
 
+# Claviers mobiles (iOS, Gboard) : la ponctuation "intelligente" remplace
+# les guillemets droits par des guillemets typographiques, ce qui casse les
+# littéraux SQL ('Alice' devient ’Alice’).
+MOBILE_QUOTES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+
+
+def normalize_mobile_quotes(query_text: str) -> str:
+    """Remplace les guillemets typographiques par des guillemets droits."""
+    return query_text.translate(MOBILE_QUOTES)
+
+
 def run_check(
     text_key: str, solution_df: pd.DataFrame, check_table: str | None = None
 ) -> None:
@@ -254,7 +265,7 @@ def run_check(
     check_table renseigné = exercice CRUD : la requête est exécutée en
     bac à sable (run_dml_in_sandbox) et c'est l'état final de cette table
     qui est comparé à la solution."""
-    query_text = st.session_state.get(text_key, "")
+    query_text = normalize_mobile_quotes(st.session_state.get(text_key, ""))
     if not query_text.strip():
         st.session_state["check_result"] = {"status": "empty"}
         return
@@ -351,13 +362,57 @@ def reset_exercise_now(name: str) -> None:
     st.session_state["check_result"] = None
 
 
-def scroll_to_top() -> None:
+def scroll_to_top(exercise_name: str) -> None:
     """Force le retour en haut de la page (utile en changeant d'exercice,
-    Streamlit ne le fait pas tout seul après un st.rerun())."""
+    Streamlit ne le fait pas tout seul après un st.rerun()).
+
+    Désactive aussi l'autocorrection / la majuscule automatique du clavier
+    mobile sur la zone de saisie SQL. La zone de texte est recréée à chaque
+    exercice (clé dépendante de l'exercice) et peut ne pas encore exister
+    quand le script s'exécute : on réessaie quelques fois. exercise_name
+    rend le contenu unique, sinon Streamlit ne réexécute pas le composant."""
     st.components.v1.html(
+        f"<!-- {exercise_name} -->"
         "<script>"
-        "var m = window.parent.document.querySelector('[data-testid=\"stMain\"]');"
+        "var doc = window.parent.document;"
+        "var m = doc.querySelector('[data-testid=\"stMain\"]');"
         "if (m) { m.scrollTo(0, 0); }"
+        "var tries = 0;"
+        "var timer = setInterval(function () {"
+        "  doc.querySelectorAll('textarea').forEach(function (t) {"
+        "    t.setAttribute('autocapitalize', 'off');"
+        "    t.setAttribute('autocorrect', 'off');"
+        "    t.setAttribute('autocomplete', 'off');"
+        "    t.setAttribute('spellcheck', 'false');"
+        "  });"
+        "  if (++tries > 10) { clearInterval(timer); }"
+        "}, 300);"
+        "</script>",
+        height=0,
+    )
+
+
+# Largeur (px) sous laquelle on considère l'écran comme mobile : la barre
+# latérale y recouvre la page, on la referme après le choix d'un thème.
+MOBILE_MAX_WIDTH = 768
+
+
+def collapse_sidebar_on_mobile() -> None:
+    """Referme la barre latérale sur petit écran, une seule fois après un
+    clic sur un thème (drapeau posé par select_theme). Sur PC, la barre
+    latérale ne recouvre pas la page : elle reste ouverte."""
+    if not st.session_state.pop("collapse_sidebar", False):
+        return
+    st.components.v1.html(
+        # Compteur dans le contenu : force la réexécution du composant même
+        # si l'on choisit deux fois de suite le même thème.
+        f"<!-- {st.session_state.get('collapse_count', 0)} -->"
+        "<script>"
+        f"if (window.parent.innerWidth < {MOBILE_MAX_WIDTH}) {{"
+        "  var b = window.parent.document.querySelector("
+        "    '[data-testid=\"stSidebarCollapseButton\"] button');"
+        "  if (b) { b.click(); }"
+        "}"
         "</script>",
         height=0,
     )
@@ -366,6 +421,8 @@ def scroll_to_top() -> None:
 def select_theme(state_key: str, theme_name: str) -> None:
     """Callback (on_click) d'un bouton de thème dans la barre latérale."""
     st.session_state[state_key] = theme_name
+    st.session_state["collapse_sidebar"] = True
+    st.session_state["collapse_count"] = st.session_state.get("collapse_count", 0) + 1
 
 
 def theme_menu(
@@ -435,6 +492,8 @@ with st.sidebar:
     )
     st.divider()
 
+collapse_sidebar_on_mobile()
+
 if app_mode == "Exercices SQL":
     with st.sidebar:
         theme_counts_df = con.execute(
@@ -490,18 +549,18 @@ if app_mode == "Exercices SQL":
             st.session_state["last_check_correct"] = None
             st.session_state["check_result"] = None
             st.session_state["checked_exercise"] = exercise_name
-            scroll_to_top()
+            scroll_to_top(exercise_name)
 
         st.subheader(exercise_name.replace("_", " ").title())
         st.write(exercise.loc[0, "statement"])
 
-        st.header("Entrez votre code SQL :")
         # La clé dépend de l'exercice : Streamlit traite alors la zone de texte
         # comme un widget neuf à chaque changement d'exercice, donc vide par
         # défaut — plus fiable qu'essayer d'effacer une clé fixe après coup.
         text_key = f"user_input_{exercise_name}"
         st.text_area(
-            label="Votre code SQL ici (Ctrl+Entrée pour valider)",
+            label="Votre code SQL",
+            help="Sur PC : Ctrl+Entrée pour valider.",
             key=text_key,
             on_change=run_check,
             args=(text_key, solution_df, check_table),
@@ -514,6 +573,9 @@ if app_mode == "Exercices SQL":
             args=(text_key, solution_df, check_table),
         )
 
+        # Verdict et bouton de suite AVANT le tableau de résultat : sur
+        # mobile, un tableau de quelques lignes suffit à les pousser hors
+        # de l'écran.
         check_result = st.session_state.get("check_result")
         if check_result:
             if check_result["status"] == "empty":
@@ -521,12 +583,6 @@ if app_mode == "Exercices SQL":
             elif check_result["status"] == "error":
                 st.error(f"Erreur SQL : {check_result['message']}")
             elif check_result["status"] == "ok":
-                if check_table:
-                    st.caption(
-                        f"Table {check_table} après votre requête (modifications "
-                        "annulées ensuite, la base n'est pas changée) :"
-                    )
-                st.dataframe(check_result["result"])
                 if check_result["correct"]:
                     st.success("✅ Bonne réponse !")
                     if check_result.get("renamed"):
@@ -566,6 +622,15 @@ if app_mode == "Exercices SQL":
             args=(exercise_name,),
         )
 
+        if check_result and check_result["status"] == "ok":
+            with st.expander("Résultat de votre requête", expanded=True):
+                if check_table:
+                    st.caption(
+                        f"Table {check_table} après votre requête (modifications "
+                        "annulées ensuite, la base n'est pas changée) :"
+                    )
+                st.dataframe(check_result["result"], hide_index=True)
+
         tab2, tab3 = st.tabs(["Tables", "Solution"])
 
         with tab2:
@@ -573,7 +638,7 @@ if app_mode == "Exercices SQL":
             for table in exercise_tables:
                 st.write(f"table: {table}")
                 df_table = con.execute(f"SELECT * FROM {table}").df()
-                st.dataframe(df_table)
+                st.dataframe(df_table, hide_index=True)
 
         with tab3:
             st.code(answer, language="sql")
@@ -582,7 +647,7 @@ if app_mode == "Exercices SQL":
                 if check_table
                 else "Résultat de la solution :"
             )
-            st.dataframe(solution_df)
+            st.dataframe(solution_df, hide_index=True)
 
 else:
     # Mode Mémocards : question/réponse simple pour mémoriser la syntaxe SQL,
