@@ -75,7 +75,8 @@ def migrate_legacy_progress(connection: duckdb.DuckDBPyConnection) -> None:
         # correspond désormais à l'absence de ligne dans exercise_progress.
         connection.execute("""
             INSERT INTO progress.exercise_progress
-            SELECT exercise_name, CAST(last_reviewed AS DATE), interval_step
+                (track, exercise_name, last_reviewed, interval_step)
+            SELECT 'sql', exercise_name, CAST(last_reviewed AS DATE), interval_step
             FROM exercises
             WHERE CAST(last_reviewed AS DATE) > DATE '1980-01-01'
             ON CONFLICT DO NOTHING
@@ -85,6 +86,55 @@ def migrate_legacy_progress(connection: duckdb.DuckDBPyConnection) -> None:
     for table in ("exercises", "flashcards"):
         for column in LEGACY_PROGRESS_COLUMNS:
             connection.execute(f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}")
+
+
+def progress_has_column(connection: duckdb.DuckDBPyConnection, table: str, column: str) -> bool:
+    """True si la table de la base de progression possède cette colonne."""
+    return connection.execute(
+        "SELECT COUNT(*) FROM information_schema.columns "
+        "WHERE table_catalog = 'progress' AND table_name = ? AND column_name = ?",
+        [table, column],
+    ).fetchone()[0] > 0
+
+
+def migrate_progress_track(connection: duckdb.DuckDBPyConnection) -> None:
+    """Migration unique vers une progression par matière : ajoute la colonne
+    track ('sql', 'python'...) et passe la clé primaire à (track,
+    exercise_name), pour qu'un exercice Python et un exercice SQL puissent
+    porter le même nom. DuckDB ne permet pas de modifier une clé primaire :
+    on recrée la table, toutes les lignes existantes étant du SQL.
+    Idempotente : ne fait rien si la table n'existe pas ou a déjà track."""
+    table_exists = connection.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_catalog = 'progress' AND table_name = 'exercise_progress'"
+    ).fetchone()[0] > 0
+    if not table_exists or progress_has_column(connection, "exercise_progress", "track"):
+        return
+
+    connection.begin()
+    try:
+        connection.execute("""
+            CREATE TABLE progress.exercise_progress_v2 (
+                track VARCHAR NOT NULL,
+                exercise_name VARCHAR NOT NULL,
+                last_reviewed DATE NOT NULL,
+                interval_step INTEGER NOT NULL,
+                PRIMARY KEY (track, exercise_name)
+            )
+        """)
+        connection.execute("""
+            INSERT INTO progress.exercise_progress_v2
+            SELECT 'sql', exercise_name, last_reviewed, interval_step
+            FROM progress.exercise_progress
+        """)
+        connection.execute("DROP TABLE progress.exercise_progress")
+        connection.execute(
+            "ALTER TABLE progress.exercise_progress_v2 RENAME TO exercise_progress"
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 @st.cache_resource
@@ -101,11 +151,16 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     connection = duckdb.connect(database=CONTENT_DB, read_only=False)
     # Chemin constant : ATTACH n'accepte pas de paramètre préparé.
     connection.execute(f"ATTACH '{PROGRESS_DB}' AS progress")
+    migrate_progress_track(connection)
+    # track : matière de l'exercice ('sql', 'python'...), cf. TRACK_* dans
+    # les pages. Un exercice sans ligne ici n'a jamais été révisé.
     connection.execute("""
         CREATE TABLE IF NOT EXISTS progress.exercise_progress (
-            exercise_name VARCHAR PRIMARY KEY,
+            track VARCHAR NOT NULL,
+            exercise_name VARCHAR NOT NULL,
             last_reviewed DATE NOT NULL,
-            interval_step INTEGER NOT NULL
+            interval_step INTEGER NOT NULL,
+            PRIMARY KEY (track, exercise_name)
         )
     """)
     migrate_legacy_progress(connection)
@@ -121,15 +176,19 @@ def clear_verdict() -> None:
     st.session_state["check_result"] = None
 
 
-def save_progress(name: str, days_from_today: int, interval_step: int) -> None:
-    """Programme la prochaine révision d'un exercice (upsert dans la base
-    de progression)."""
+def save_progress(
+    track: str, name: str, days_from_today: int, interval_step: int
+) -> None:
+    """Programme la prochaine révision d'un exercice d'une matière (upsert
+    dans la base de progression)."""
     get_connection().execute(
-        "INSERT INTO progress.exercise_progress VALUES (?, ?, ?) "
-        "ON CONFLICT (exercise_name) DO UPDATE SET "
+        "INSERT INTO progress.exercise_progress "
+        "(track, exercise_name, last_reviewed, interval_step) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (track, exercise_name) DO UPDATE SET "
         "last_reviewed = excluded.last_reviewed, "
         "interval_step = excluded.interval_step",
-        [name, date.today() + timedelta(days=days_from_today), interval_step],
+        [track, name, date.today() + timedelta(days=days_from_today), interval_step],
     )
 
 
@@ -141,29 +200,30 @@ def next_review(interval_step: int) -> tuple[int, int]:
     return next_days, new_step
 
 
-def advance_exercise(name: str, next_days: int, new_step: int) -> None:
+def advance_exercise(track: str, name: str, next_days: int, new_step: int) -> None:
     """Callback (on_click) du bouton Continuer : programme la prochaine
     révision. Volontairement PAS de st.rerun() ici — un st.rerun() appelé
     depuis un gestionnaire de bouton a provoqué une perte aléatoire de la
     sélection de thème (session_state vidé) une fois sur deux ; un on_click
     s'exécute avant le script principal, qui repart de toute façon avec les
     données à jour au rerun naturel déclenché par le clic."""
-    save_progress(name, next_days, new_step)
+    save_progress(track, name, next_days, new_step)
     clear_verdict()
 
 
-def reschedule_exercise(name: str, days: int, step: int = 0) -> None:
+def reschedule_exercise(track: str, name: str, days: int, step: int = 0) -> None:
     """Callback (on_click) du bouton Revoir plus tard."""
-    save_progress(name, days, step)
+    save_progress(track, name, days, step)
     clear_verdict()
 
 
-def reset_exercise_now(name: str) -> None:
+def reset_exercise_now(track: str, name: str) -> None:
     """Callback (on_click) du bouton Reset : sans ligne de progression,
     l'exercice redevient "jamais révisé", donc dû immédiatement."""
     get_connection().execute(
-        "DELETE FROM progress.exercise_progress WHERE exercise_name = ?",
-        [name],
+        "DELETE FROM progress.exercise_progress "
+        "WHERE track = ? AND exercise_name = ?",
+        [track, name],
     )
     clear_verdict()
 

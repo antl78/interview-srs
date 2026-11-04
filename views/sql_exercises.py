@@ -17,6 +17,9 @@ from srs_core import (
 
 con = get_connection()
 
+# Matière de ces exercices dans la base de progression (colonne track).
+TRACK = "sql"
+
 # Exercices + état de révision. Un exercice sans ligne dans
 # exercise_progress n'a jamais été révisé : il est dû immédiatement.
 # position (rowid) départage les ex aequo dans l'ordre du programme.
@@ -28,7 +31,9 @@ WITH exercise_state AS (
         COALESCE(p.last_reviewed, DATE '1970-01-01') AS last_reviewed,
         COALESCE(p.interval_step, 0) AS interval_step
     FROM exercises AS e
-    LEFT JOIN progress.exercise_progress AS p USING (exercise_name)
+    LEFT JOIN progress.exercise_progress AS p
+        ON p.track = 'sql'  -- = TRACK
+        AND p.exercise_name = e.exercise_name
 )
 """
 
@@ -157,13 +162,13 @@ else:
             f"✅ Continuer → prochaine révision dans {next_days} jours",
             type="primary",
             on_click=advance_exercise,
-            args=(exercise_name, next_days, new_step),
+            args=(TRACK, exercise_name, next_days, new_step),
         )
     elif st.session_state.get("last_check_correct") is False:
         st.button(
             f"🔁 Revoir dans {REVIEW_INTERVALS[0]} jours",
             on_click=reschedule_exercise,
-            args=(exercise_name, REVIEW_INTERVALS[0], 0),
+            args=(TRACK, exercise_name, REVIEW_INTERVALS[0], 0),
         )
 
     st.button(
@@ -174,7 +179,7 @@ else:
             "suite sans attendre son échéance normale."
         ),
         on_click=reset_exercise_now,
-        args=(exercise_name,),
+        args=(TRACK, exercise_name),
     )
 
     if check_result and check_result["status"] == "ok":
