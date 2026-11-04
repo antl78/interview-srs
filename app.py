@@ -31,6 +31,14 @@ navigation = st.navigation(
                 url_path="sql-memocards",
             ),
         ],
+        "Python": [
+            st.Page(
+                "views/python_exercises.py",
+                title="Exercices Python",
+                icon="🐍",
+                url_path="python",
+            ),
+        ],
     }
 )
 
