@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from python_check import run_tests
-from python_runner import compare
+from python_runner import compare, format_call, run_case
 
 EXERCISES = Path(__file__).resolve().parent.parent / "python_exercises" / "basics"
 REVERSE = EXERCISES / "01_reverse_words.py"
@@ -77,3 +77,56 @@ def test_non_ascii_code_and_output():
     code = "def reverse_words(s):\n    print('déjà vu')\n    return ' '.join(s.split()[::-1])\n"
     out = run_tests(REVERSE, code)
     assert out["results"][0]["stdout"].startswith("déjà vu")
+
+
+def take_3(gen):
+    return [next(gen) for _ in range(3)]
+
+
+def call_with_10(func, *args):
+    return func(10)
+
+
+def test_then_consumes_result():
+    def naturals():
+        n = 0
+        while True:
+            yield n
+            n += 1
+
+    case = {"args": (), "then": take_3, "expected": [0, 1, 2]}
+    result = run_case(naturals, case)
+    assert result["passed"]
+    assert result["call"] == "take_3(naturals())"
+
+
+def test_then_receives_args_and_shows_function_names():
+    def double(x):
+        return 2 * x
+
+    def identity_decorator(func):
+        return func
+
+    case = {"args": (double,), "then": call_with_10, "expected": 20}
+    result = run_case(identity_decorator, case)
+    assert result["passed"]
+    assert result["call"] == "call_with_10(identity_decorator(double))"
+
+
+def test_then_exception_is_reported():
+    def not_a_generator():
+        return 42
+
+    case = {"args": (), "then": take_3, "expected": [0, 1, 2]}
+    result = run_case(not_a_generator, case)
+    assert not result["passed"] and result["got"].startswith("TypeError")
+
+
+def test_then_with_raises():
+    def make_failing():
+        def inner(x):
+            raise ValueError("boom")
+        return inner
+
+    case = {"args": (), "then": call_with_10, "raises": ValueError}
+    assert run_case(make_failing, case)["passed"]

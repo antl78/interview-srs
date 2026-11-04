@@ -33,11 +33,22 @@ def short_repr(value) -> str:
     return text if len(text) <= MAX_REPR_LENGTH else text[:MAX_REPR_LENGTH] + "…"
 
 
+def display_arg(value) -> str:
+    """Une fonction passée en argument s'affiche par son nom, pas par
+    <function f at 0x...>."""
+    if callable(value) and hasattr(value, "__name__"):
+        return value.__name__
+    return short_repr(value)
+
+
 def format_call(function_name: str, case: dict) -> str:
-    """Appel lisible, ex : top_k("a b", 2)"""
-    parts = [short_repr(a) for a in case["args"]]
-    parts += [f"{k}={short_repr(v)}" for k, v in case.get("kwargs", {}).items()]
-    return f"{function_name}({', '.join(parts)})"
+    """Appel lisible, ex : top_k("a b", 2), ou take_10(fibonacci()) quand
+    le cas a une étape 'then'."""
+    parts = [display_arg(a) for a in case["args"]]
+    parts += [f"{k}={display_arg(v)}" for k, v in case.get("kwargs", {}).items()]
+    call = f"{function_name}({', '.join(parts)})"
+    then = case.get("then")
+    return f"{then.__name__}({call})" if then else call
 
 
 def approx_equal(got, expected) -> bool:
@@ -89,7 +100,14 @@ def compare(got, expected, mode: str = "exact") -> tuple[bool, str]:
 
 def run_case(function, case: dict) -> dict:
     """Exécute un cas de test. Les arguments sont copiés : une fonction qui
-    modifie ses entrées ne fausse ni le cas suivant ni l'affichage."""
+    modifie ses entrées ne fausse ni le cas suivant ni l'affichage.
+
+    Étape facultative 'then' : fonction du fichier d'exercice, appelée avec
+    then(résultat, *args, **kwargs) (les mêmes copies d'arguments). C'est
+    sa valeur de retour qui est comparée à 'expected'. Elle sert à utiliser
+    un résultat qu'on ne peut pas comparer directement : consommer un
+    générateur, appeler une closure ou une fonction décorée, entrer dans
+    un context manager."""
     args = copy.deepcopy(tuple(case["args"]))
     kwargs = copy.deepcopy(case.get("kwargs", {}))
     expected_exc = case.get("raises")
@@ -104,6 +122,8 @@ def run_case(function, case: dict) -> dict:
     try:
         with contextlib.redirect_stdout(stdout):
             got = function(*args, **kwargs)
+            if "then" in case:
+                got = case["then"](got, *args, **kwargs)
     except BaseException as exc:  # pylint: disable=broad-exception-caught
         if isinstance(exc, KeyboardInterrupt):
             raise

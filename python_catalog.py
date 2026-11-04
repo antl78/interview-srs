@@ -91,6 +91,13 @@ def load_exercise(path: Path) -> dict:
                 f"{path} : cas {i} — 'args' et exactement un de "
                 "'expected' / 'raises' sont requis"
             )
+        then = case.get("then")
+        if then is not None and (
+            not inspect.isfunction(then) or then.__name__ == "<lambda>"
+        ):
+            raise ExerciseFormatError(
+                f"{path} : cas {i} — 'then' doit être une fonction nommée"
+            )
     return {
         "meta": module.META,
         "function": function,
