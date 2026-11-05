@@ -37,7 +37,7 @@ def exercise_files_signature() -> tuple:
 
 
 @st.cache_data
-def get_catalog(_signature: tuple) -> pd.DataFrame:
+def get_catalog(signature: tuple) -> pd.DataFrame:
     return load_catalog()
 
 
