@@ -38,6 +38,12 @@ navigation = st.navigation(
                 icon="🐍",
                 url_path="python",
             ),
+            st.Page(
+                "views/python_flashcards.py",
+                title="Mémocards Python",
+                icon="🃏",
+                url_path="python-memocards",
+            ),
         ],
     }
 )

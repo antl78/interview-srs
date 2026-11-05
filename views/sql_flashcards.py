@@ -1,13 +1,12 @@
 """Page Mémocards SQL : question/réponse simple pour mémoriser la syntaxe.
+Affichage commun avec les mémocards Python (srs_core.show_flashcards).
 Pas encore branchée sur la répétition espacée (REVIEW_INTERVALS) —
 volontairement minimal pour l'instant, le temps de voir si le contenu et
 le format conviennent."""
 
-import random
-
 import streamlit as st
 
-from srs_core import get_connection, theme_menu
+from srs_core import get_connection, show_flashcards, theme_menu
 
 con = get_connection()
 
@@ -22,21 +21,6 @@ FLASHCARD_THEME_LEVELS = {
     ],
     "Niveau 5 · Window functions": ["window_functions"],
 }
-
-
-def reveal_flashcard_answer() -> None:
-    """Callback (on_click) du bouton Afficher la réponse."""
-    st.session_state["flashcard_revealed"] = True
-
-
-def next_flashcard(card_names: list) -> None:
-    """Callback (on_click) du bouton Carte suivante : tire une nouvelle
-    carte au hasard (différente de la précédente s'il y en a plusieurs) et
-    masque la réponse."""
-    previous = st.session_state.get("flashcard_current")
-    choices = [c for c in card_names if c != previous] or card_names
-    st.session_state["flashcard_current"] = random.choice(choices)
-    st.session_state["flashcard_revealed"] = False
 
 
 with st.sidebar:
@@ -59,29 +43,4 @@ else:
         [flashcard_theme],
     ).df()
 
-    card_names = list(flashcards_df["card_name"])
-
-    # Changement de thème (ou premier passage) : tirage initial au
-    # hasard, mémorisé dans session_state pour rester stable entre les
-    # reruns tant qu'on reste sur la même carte.
-    if st.session_state.get("flashcard_theme_loaded") != flashcard_theme:
-        st.session_state["flashcard_current"] = random.choice(card_names)
-        st.session_state["flashcard_revealed"] = False
-        st.session_state["flashcard_theme_loaded"] = flashcard_theme
-
-    card = flashcards_df[
-        flashcards_df["card_name"] == st.session_state["flashcard_current"]
-    ].iloc[0]
-
-    nb_cards = len(card_names)
-    st.subheader(f"Mémocard — {flashcard_theme} ({nb_cards} carte{'s' if nb_cards > 1 else ''})")
-    st.write(card["question"])
-
-    if st.session_state.get("flashcard_revealed"):
-        st.success(card["answer"])
-        if card["example"]:
-            st.code(card["example"], language="sql")
-    else:
-        st.button("Afficher la réponse", on_click=reveal_flashcard_answer)
-
-    st.button("Carte suivante ➡️", on_click=next_flashcard, args=(card_names,))
+    show_flashcards(flashcards_df, flashcard_theme, state_prefix="flashcard", language="sql")

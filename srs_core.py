@@ -7,6 +7,7 @@ mêmes fonctions."""
 
 import logging
 import os
+import random
 from datetime import date, timedelta
 
 import duckdb
@@ -340,3 +341,74 @@ def theme_menu(
 
     selected = st.session_state.get(state_key)
     return selected if selected in themes else None
+
+
+# ----------------------------------------
+# Mémocards (communes à toutes les matières)
+# ----------------------------------------
+# Tirage au hasard, sans répétition espacée pour l'instant. Les clés de
+# session_state sont préfixées par matière (state_prefix) : chaque page
+# garde sa carte en cours.
+
+
+def reveal_flashcard_answer(state_prefix: str) -> None:
+    """Callback (on_click) du bouton Afficher la réponse."""
+    st.session_state[f"{state_prefix}_revealed"] = True
+
+
+def next_flashcard(state_prefix: str, card_names: list) -> None:
+    """Callback (on_click) du bouton Carte suivante : tire une nouvelle
+    carte au hasard (différente de la précédente s'il y en a plusieurs) et
+    masque la réponse."""
+    previous = st.session_state.get(f"{state_prefix}_current")
+    choices = [c for c in card_names if c != previous] or card_names
+    st.session_state[f"{state_prefix}_current"] = random.choice(choices)
+    st.session_state[f"{state_prefix}_revealed"] = False
+
+
+def show_flashcards(cards, theme: str, state_prefix: str, language: str) -> None:
+    """Affiche une mémocard du thème : question, puis sur demande la réponse,
+    l'exemple (coloré selon language) et, s'il y en a une, sa sortie.
+    cards : DataFrame des cartes du thème (card_name, question, answer,
+    example, et output facultatif)."""
+    card_names = list(cards["card_name"])
+
+    # Changement de thème (ou carte disparue) : tirage initial au hasard,
+    # mémorisé pour rester stable entre les reruns.
+    if (
+        st.session_state.get(f"{state_prefix}_theme_loaded") != theme
+        or st.session_state.get(f"{state_prefix}_current") not in card_names
+    ):
+        st.session_state[f"{state_prefix}_current"] = random.choice(card_names)
+        st.session_state[f"{state_prefix}_revealed"] = False
+        st.session_state[f"{state_prefix}_theme_loaded"] = theme
+
+    card = cards[cards["card_name"] == st.session_state[f"{state_prefix}_current"]].iloc[0]
+
+    nb_cards = len(card_names)
+    st.subheader(f"Mémocard — {theme} ({nb_cards} carte{'s' if nb_cards > 1 else ''})")
+    st.write(card["question"])
+
+    if st.session_state.get(f"{state_prefix}_revealed"):
+        st.success(card["answer"])
+        example = card.get("example")
+        if isinstance(example, str) and example.strip():
+            st.code(example.rstrip("\n"), language=language)
+        output = card.get("output")
+        if isinstance(output, str) and output.strip():
+            st.caption("Sortie")
+            st.code(output, language="text")
+    else:
+        st.button(
+            "Afficher la réponse",
+            key=f"{state_prefix}_reveal",
+            on_click=reveal_flashcard_answer,
+            args=(state_prefix,),
+        )
+
+    st.button(
+        "Carte suivante ➡️",
+        key=f"{state_prefix}_next",
+        on_click=next_flashcard,
+        args=(state_prefix, card_names),
+    )
